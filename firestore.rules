@@ -1,0 +1,33 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users can read/write their own data
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Swipes collection - users can read/write their own swipes
+    match /swipes/{swipeId} {
+      allow read, write: if request.auth != null && 
+        request.auth.uid == resource.data.userId;
+    }
+    
+    // Lists collection - users can read/write their own lists
+    match /lists/{listId} {
+      allow read, write: if request.auth != null && 
+        request.auth.uid == resource.data.userId;
+    }
+    
+    // Scores collection - users can read/write their own scores
+    match /scores/{scoreId} {
+      allow read, write: if request.auth != null && 
+        request.auth.uid == resource.data.userId;
+    }
+    
+    // Movies collection - public read access
+    match /movies/{movieId} {
+      allow read: if true;
+      allow write: if false; // Only admin can write
+    }
+  }
+} 

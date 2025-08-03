@@ -1,0 +1,39 @@
+{
+  "name": "watchlyst_backend",
+  "version": "1.0.0",
+  "description": "Backend for WatchLyst app with Firebase services",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "deploy": "firebase deploy",
+    "deploy:functions": "firebase deploy --only functions",
+    "deploy:firestore": "firebase deploy --only firestore",
+    "emulators": "firebase emulators:start",
+    "import:movies": "node scripts/import-movies.js",
+    "import:movies:single": "node scripts/import-movies.js single",
+    "import:movies:multiple": "node scripts/import-movies.js multiple",
+    "import:comprehensive": "node scripts/comprehensive-import.js",
+    "import:all": "node scripts/import-all-movies.js",
+    "import:robust": "node scripts/robust-import.js",
+    "test:import": "node scripts/test-import.js",
+    "update:flags": "node scripts/update-movie-flags.js",
+    "setup": "node scripts/setup.js"
+  },
+  "keywords": ["firebase", "movies", "watchlist", "tmdb"],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.11.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "firebase-admin": "^13.4.0",
+    "firebase-functions": "^6.4.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  }
+}
