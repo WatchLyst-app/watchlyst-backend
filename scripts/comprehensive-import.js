@@ -16,153 +16,267 @@ const db = admin.firestore();
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 
-async function fetchMovies(endpoint, page = 1) {
-  const response = await fetch(
-    `${TMDB_BASE_URL}${endpoint}?api_key=${TMDB_API_KEY}&page=${page}&language=en-US`,
-    {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-      },
-      timeout: 15000,
+// Cache for genres to avoid repeated API calls
+const genresCache = new Map();
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
-  );
-
-  if (!response.ok) {
-    throw new Error(`TMDB API error: ${response.status} - ${response.statusText}`);
+    
+    return await response.json();
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
   }
-
-  return await response.json();
 }
 
-async function importMovies(category, endpoint, pages = 3) {
-  console.log(`\n🎬 Importing ${category} movies...`);
-  
-  let totalImported = 0;
-  
-  for (let page = 1; page <= pages; page++) {
-    try {
-      console.log(`  📄 Fetching page ${page}...`);
-      const data = await fetchMovies(endpoint, page);
-      
-      if (!data.results || data.results.length === 0) {
-        console.log(`  ⚠️  No more movies on page ${page}`);
-        break;
-      }
-
-      const movies = data.results;
-      const batch = db.batch();
-      const timestamp = admin.firestore.Timestamp.now();
-
-      for (const movie of movies) {
-        // Get existing movie data to preserve flags
-        const movieRef = db.collection('movies').doc(movie.id.toString());
-        const existingDoc = await movieRef.get();
-        let existingData = {};
-        
-        if (existingDoc.exists) {
-          existingData = existingDoc.data();
-        }
-
-        const movieData = {
-          tmdbId: movie.id,
-          title: movie.title,
-          overview: movie.overview,
-          posterPath: movie.poster_path,
-          backdropPath: movie.backdrop_path,
-          releaseDate: movie.release_date,
-          voteAverage: movie.vote_average,
-          voteCount: movie.vote_count,
-          genreIds: movie.genre_ids,
-          popularity: movie.popularity,
-          // Category flags
-          isTrending: category === 'Trending' ? true : (existingData.isTrending || false),
-          isPopular: category === 'Popular' ? true : (existingData.isPopular || false),
-          isTopRated: category === 'Top Rated' ? true : (existingData.isTopRated || false),
-          isNowPlaying: category === 'Now Playing' ? true : (existingData.isNowPlaying || false),
-          // Update timestamps
-          createdAt: existingData.createdAt || timestamp,
-          updatedAt: timestamp,
-        };
-
-        batch.set(movieRef, movieData, { merge: true });
-      }
-
-      await batch.commit();
-      totalImported += movies.length;
-      console.log(`  ✅ Imported ${movies.length} movies from page ${page}`);
-      
-      // Add delay to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-    } catch (error) {
-      console.error(`  ❌ Error on page ${page}:`, error.message);
-      break;
-    }
+async function getGenres() {
+  if (genresCache.size > 0) {
+    return genresCache;
   }
   
-  console.log(`🎯 Total ${category} movies imported: ${totalImported}`);
-  return totalImported;
+  try {
+    console.log('📚 Fetching genres from TMDB...');
+    const response = await fetchWithTimeout(
+      `${TMDB_BASE_URL}/genre/movie/list?api_key=${TMDB_API_KEY}&language=en-US`
+    );
+    
+    response.genres.forEach(genre => {
+      genresCache.set(genre.id, genre.name);
+    });
+    
+    console.log(`✅ Loaded ${genresCache.size} genres`);
+    return genresCache;
+  } catch (error) {
+    console.error('❌ Failed to fetch genres:', error.message);
+    return new Map();
+  }
+}
+
+async function getMovieDetails(movieId) {
+  try {
+    const response = await fetchWithTimeout(
+      `${TMDB_BASE_URL}/movie/${movieId}?api_key=${TMDB_API_KEY}&language=en-US&append_to_response=credits,videos,images`
+    );
+    
+    return response;
+  } catch (error) {
+    console.error(`❌ Failed to get details for movie ${movieId}:`, error.message);
+    return null;
+  }
+}
+
+async function discoverMovies(page = 1, sortBy = 'popularity.desc') {
+  try {
+    const response = await fetchWithTimeout(
+      `${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&language=en-US&sort_by=${sortBy}&include_adult=false&include_video=false&page=${page}&with_watch_monetization_types=flatrate`
+    );
+    
+    return response;
+  } catch (error) {
+    console.error(`❌ Failed to discover movies on page ${page}:`, error.message);
+    return null;
+  }
+}
+
+async function checkExistingMovie(tmdbId) {
+  try {
+    const doc = await db.collection('movies').doc(tmdbId.toString()).get();
+    return doc.exists;
+  } catch (error) {
+    console.error(`❌ Error checking existing movie ${tmdbId}:`, error.message);
+    return false;
+  }
+}
+
+async function importMovieWithDetails(movie, genres) {
+  try {
+    const tmdbId = movie.id;
+    
+    // Check if movie already exists
+    const exists = await checkExistingMovie(tmdbId);
+    if (exists) {
+      console.log(`⏭️  Movie already exists: ${movie.title} (ID: ${tmdbId})`);
+      return { skipped: true, tmdbId };
+    }
+    
+    // Get detailed movie information
+    console.log(`🔍 Getting details for: ${movie.title} (ID: ${tmdbId})`);
+    const details = await getMovieDetails(tmdbId);
+    
+    if (!details) {
+      console.log(`⚠️  Skipping ${movie.title} - failed to get details`);
+      return { skipped: true, tmdbId };
+    }
+    
+    // Get genre names from IDs
+    const genreNames = details.genres?.map(genre => genre.name) || [];
+    const genreIds = details.genres?.map(genre => genre.id) || [];
+    
+    const movieData = {
+      tmdbId: tmdbId,
+      title: details.title || movie.title,
+      originalTitle: details.original_title,
+      overview: details.overview || movie.overview,
+      tagline: details.tagline,
+      posterPath: details.poster_path || movie.poster_path,
+      backdropPath: details.backdrop_path || movie.backdrop_path,
+      releaseDate: details.release_date || movie.release_date,
+      voteAverage: details.vote_average || movie.vote_average,
+      voteCount: details.vote_count || movie.vote_count,
+      popularity: details.popularity || movie.popularity,
+      runtime: details.runtime,
+      status: details.status,
+      budget: details.budget,
+      revenue: details.revenue,
+      // Genres
+      genreIds: genreIds,
+      genres: genreNames,
+      // Additional details
+      homepage: details.homepage,
+      imdbId: details.imdb_id,
+      originalLanguage: details.original_language,
+      productionCompanies: details.production_companies?.map(company => ({
+        id: company.id,
+        name: company.name,
+        logoPath: company.logo_path,
+        originCountry: company.origin_country
+      })) || [],
+      productionCountries: details.production_countries?.map(country => ({
+        iso31661: country.iso_3166_1,
+        name: country.name
+      })) || [],
+      spokenLanguages: details.spoken_languages?.map(lang => ({
+        iso6391: lang.iso_639_1,
+        name: lang.name
+      })) || [],
+      // Timestamps
+      createdAt: admin.firestore.Timestamp.now(),
+      updatedAt: admin.firestore.Timestamp.now(),
+    };
+    
+    // Save to Firestore
+    await db.collection('movies').doc(tmdbId.toString()).set(movieData);
+    
+    console.log(`✅ Imported: ${movieData.title} (${genreNames.join(', ')})`);
+    return { success: true, tmdbId, title: movieData.title };
+    
+  } catch (error) {
+    console.error(`❌ Error importing movie ${movie.id}:`, error.message);
+    return { error: true, tmdbId: movie.id };
+  }
 }
 
 async function comprehensiveImport() {
   try {
-    console.log('🚀 Starting comprehensive movie import...');
+    console.log('🚀 Starting COMPREHENSIVE movie import from TMDB...');
     console.log('TMDB API Key:', TMDB_API_KEY ? '✅ Set' : '❌ Not set');
     console.log('Firebase Project ID:', process.env.FIREBASE_PROJECT_ID);
     
-    let totalMovies = 0;
+    // Get genres first
+    const genres = await getGenres();
     
-    // Import different categories
-    const categories = [
-      {
-        name: 'Popular',
-        endpoint: '/movie/popular',
-        pages: 5
-      },
-      {
-        name: 'Trending',
-        endpoint: '/trending/movie/week',
-        pages: 3
-      },
-      {
-        name: 'Top Rated',
-        endpoint: '/movie/top_rated',
-        pages: 5
-      },
-      {
-        name: 'Now Playing',
-        endpoint: '/movie/now_playing',
-        pages: 3
+    let totalImported = 0;
+    let totalSkipped = 0;
+    let totalErrors = 0;
+    let page = 1;
+    const maxPages = 500; // TMDB has thousands of pages available
+    
+    console.log('\n🎬 Starting discovery import...');
+    
+    while (page <= maxPages) {
+      try {
+        console.log(`\n📄 Processing page ${page}...`);
+        
+        const discoverData = await discoverMovies(page);
+        
+        if (!discoverData || !discoverData.results || discoverData.results.length === 0) {
+          console.log(`⚠️  No more movies found on page ${page}`);
+          break;
+        }
+        
+        console.log(`📋 Found ${discoverData.results.length} movies on page ${page}`);
+        
+        // Process movies in batches to avoid overwhelming the API
+        const batchSize = 5;
+        for (let i = 0; i < discoverData.results.length; i += batchSize) {
+          const batch = discoverData.results.slice(i, i + batchSize);
+          
+          console.log(`  🔄 Processing batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(discoverData.results.length/batchSize)}`);
+          
+          const results = await Promise.allSettled(
+            batch.map(movie => importMovieWithDetails(movie, genres))
+          );
+          
+          results.forEach(result => {
+            if (result.status === 'fulfilled') {
+              if (result.value.success) {
+                totalImported++;
+              } else if (result.value.skipped) {
+                totalSkipped++;
+              } else if (result.value.error) {
+                totalErrors++;
+              }
+            } else {
+              totalErrors++;
+              console.error('❌ Promise rejected:', result.reason);
+            }
+          });
+          
+          // Add delay between batches to respect API rate limits
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        console.log(`✅ Page ${page} completed - Imported: ${totalImported}, Skipped: ${totalSkipped}, Errors: ${totalErrors}`);
+        
+        page++;
+        
+        // Add delay between pages
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+      } catch (error) {
+        console.error(`❌ Error processing page ${page}:`, error.message);
+        break;
       }
-    ];
-    
-    for (const category of categories) {
-      const imported = await importMovies(category.name, category.endpoint, category.pages);
-      totalMovies += imported;
     }
     
-    console.log(`\n🎉 Comprehensive import completed!`);
-    console.log(`📊 Total movies imported: ${totalMovies}`);
+    console.log('\n🎉 COMPREHENSIVE import completed!');
+    console.log(`📊 Final Statistics:`);
+    console.log(`   ✅ Total imported: ${totalImported}`);
+    console.log(`   ⏭️  Total skipped (already exist): ${totalSkipped}`);
+    console.log(`   ❌ Total errors: ${totalErrors}`);
+    console.log(`   📄 Total pages processed: ${page - 1}`);
     
-    // Verify by reading back and showing flags
-    const snapshot = await db.collection('movies').limit(10).get();
-    console.log(`\n📋 Sample of imported movies with flags:`);
+    // Get final database count
+    const snapshot = await db.collection('movies').get();
+    console.log(`📋 Total unique movies in database: ${snapshot.size}`);
     
-    snapshot.docs.forEach((doc, index) => {
+    // Show sample of imported movies with genres
+    const sampleSnapshot = await db.collection('movies').orderBy('createdAt', 'desc').limit(5).get();
+    console.log(`\n📋 Sample of recently imported movies:`);
+    
+    sampleSnapshot.docs.forEach((doc, index) => {
       const data = doc.data();
-      const flags = [];
-      if (data.isTrending) flags.push('🔥 Trending');
-      if (data.isPopular) flags.push('⭐ Popular');
-      if (data.isTopRated) flags.push('🏆 Top Rated');
-      if (data.isNowPlaying) flags.push('🎬 Now Playing');
-      
-      console.log(`  ${index + 1}. ${data.title} - Rating: ${data.voteAverage}/10`);
-      console.log(`     Flags: ${flags.join(', ')}`);
+      console.log(`  ${index + 1}. ${data.title}`);
+      console.log(`     Genres: ${data.genres?.join(', ') || 'N/A'}`);
+      console.log(`     Rating: ${data.voteAverage}/10 (${data.voteCount} votes)`);
+      console.log(`     Runtime: ${data.runtime || 'N/A'} minutes`);
+      console.log(`     Release: ${data.releaseDate || 'N/A'}`);
     });
     
   } catch (error) {
-    console.error('❌ Import failed:', error.message);
+    console.error('❌ Comprehensive import failed:', error.message);
     if (error.cause) {
       console.error('  Cause:', error.cause.message);
     }
@@ -170,9 +284,9 @@ async function comprehensiveImport() {
 }
 
 comprehensiveImport().then(() => {
-  console.log('\n✨ Import process completed!');
+  console.log('\n✨ Comprehensive import process completed!');
   process.exit(0);
 }).catch(error => {
-  console.error('Import process failed:', error);
+  console.error('Comprehensive import process failed:', error);
   process.exit(1);
 }); 

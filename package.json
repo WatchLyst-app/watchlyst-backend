@@ -17,6 +17,7 @@
     "import:comprehensive": "node scripts/comprehensive-import.js",
     "import:all": "node scripts/import-all-movies.js",
     "import:robust": "node scripts/robust-import.js",
+    "import:massive": "node scripts/massive-import.js",
     "test:import": "node scripts/test-import.js",
     "update:flags": "node scripts/update-movie-flags.js",
     "setup": "node scripts/setup.js"
