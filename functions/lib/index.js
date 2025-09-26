@@ -1,12 +1,19 @@
 "use strict";
 var _a;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getUserLists = exports.addToList = exports.getWatchlist = exports.updateFaceOff = exports.getMovies = exports.importMoviesFromTMDB = void 0;
+exports.getUserLists = exports.addToList = exports.getWatchlist = exports.updateFaceOff = exports.getMovies = exports.importMoviesFromTMDB = exports.updateMovieFeatures = exports.getUserScoringDetails = exports.refreshRecommendations = exports.generateInitialRecommendations = exports.processSwipeInteraction = void 0;
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 // Initialize Firebase Admin
 admin.initializeApp();
 const db = admin.firestore();
+// Export recommendation functions
+var recommendations_1 = require("./recommendations");
+Object.defineProperty(exports, "processSwipeInteraction", { enumerable: true, get: function () { return recommendations_1.processSwipeInteraction; } });
+Object.defineProperty(exports, "generateInitialRecommendations", { enumerable: true, get: function () { return recommendations_1.generateInitialRecommendations; } });
+Object.defineProperty(exports, "refreshRecommendations", { enumerable: true, get: function () { return recommendations_1.refreshRecommendations; } });
+Object.defineProperty(exports, "getUserScoringDetails", { enumerable: true, get: function () { return recommendations_1.getUserScoringDetails; } });
+Object.defineProperty(exports, "updateMovieFeatures", { enumerable: true, get: function () { return recommendations_1.updateMovieFeatures; } });
 // TMDB API configuration
 const TMDB_API_KEY = ((_a = functions.config().tmdb) === null || _a === void 0 ? void 0 : _a.api_key) || process.env.TMDB_API_KEY;
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';

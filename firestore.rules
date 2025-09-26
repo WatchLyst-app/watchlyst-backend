@@ -1,33 +1,73 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Users can read/write their own data
-    match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
     }
     
-    // Swipes collection - users can read/write their own swipes
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isValidInteraction() {
+      return request.resource.data.action in ['loved', 'liked', 'seen', 'not_seen', 'disliked'] &&
+             request.resource.data.userId is string &&
+             request.resource.data.movieId is string &&
+             request.resource.data.timestamp is timestamp;
+    }
+    
+    // Users collection - users can only read/write their own data
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId) && 
+                       request.resource.data.email == resource.data.email; // Can't change email
+      allow delete: if false; // Prevent accidental deletion
+    }
+    
+    // Movies collection - read-only for users, write via admin/functions
+    match /movies/{movieId} {
+      allow read: if true; // Public read access
+      allow write: if false; // Only admin/functions can write
+    }
+    
+    // User preferences - private to each user
+    match /userPreferences/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if false; // Only Cloud Functions can update ML model
+    }
+    
+    // Interactions - users can create their own, read their own
+    match /interactions/{interactionId} {
+      allow read: if isAuthenticated() && 
+                     resource.data.userId == request.auth.uid;
+      allow create: if isOwner(request.resource.data.userId) && 
+                       isValidInteraction();
+      allow update: if false; // Interactions are immutable
+      allow delete: if false; // Keep full history
+    }
+    
+    // Recommendations - read-only for users
+    match /recommendations/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if false; // Only Cloud Functions can update
+    }
+    
+    // Legacy collections for backward compatibility
     match /swipes/{swipeId} {
       allow read, write: if request.auth != null && 
         request.auth.uid == resource.data.userId;
     }
     
-    // Lists collection - users can read/write their own lists
     match /lists/{listId} {
       allow read, write: if request.auth != null && 
         request.auth.uid == resource.data.userId;
     }
     
-    // Scores collection - users can read/write their own scores
     match /scores/{scoreId} {
       allow read, write: if request.auth != null && 
         request.auth.uid == resource.data.userId;
     }
-    
-    // Movies collection - public read access
-    match /movies/{movieId} {
-      allow read: if true;
-      allow write: if false; // Only admin can write
-    }
   }
-} 
+}

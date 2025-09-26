@@ -25,6 +25,10 @@ admin.initializeApp({
 const db = admin.firestore();
 const app = express();
 
+// TMDB API configuration
+const TMDB_API_KEY = process.env.TMDB_API_KEY;
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+
 // Enable CORS
 app.use(cors());
 
@@ -96,6 +100,143 @@ app.get('/api/movies', async (req, res) => {
     });
   }
 });
+
+// Get detailed movie information from TMDB
+app.get('/api/movies/:movieId/details', async (req, res) => {
+  try {
+    const { movieId } = req.params;
+    
+    if (!movieId) {
+      return res.status(400).json({ error: 'Movie ID is required' });
+    }
+
+    if (!TMDB_API_KEY) {
+      return res.status(500).json({ error: 'TMDB API key not configured' });
+    }
+
+    console.log(`Fetching details for movie ID: ${movieId}`);
+
+    // Fetch detailed movie information from TMDB
+    const response = await fetch(
+      `${TMDB_BASE_URL}/movie/${movieId}?api_key=${TMDB_API_KEY}&language=en-US&append_to_response=credits,videos,watch/providers`
+    );
+
+    if (!response.ok) {
+      throw new Error(`TMDB API error: ${response.status}`);
+    }
+
+    const movieData = await response.json();
+    console.log(`Successfully fetched details for: ${movieData.title}`);
+
+    // Extract relevant information
+    const movieDetails = {
+      id: movieData.id,
+      title: movieData.title,
+      overview: movieData.overview,
+      releaseDate: movieData.release_date,
+      runtime: movieData.runtime,
+      
+      // Cast information (first 10)
+      cast: movieData.credits?.cast?.slice(0, 10).map(member => ({
+        id: member.id,
+        name: member.name,
+        character: member.character,
+        profilePath: member.profile_path,
+        order: member.order,
+      })) || [],
+      
+      // Crew information (director, producer)
+      crew: {
+        director: movieData.credits?.crew?.find(member => member.job === 'Director')?.name || 'Unknown',
+        producer: movieData.credits?.crew?.find(member => member.job === 'Producer')?.name || 'Unknown',
+      },
+      
+      // Videos/Trailers
+      videos: movieData.videos?.results?.filter(video => 
+        video.type === 'Trailer' && video.site === 'YouTube'
+      ).map(video => ({
+        id: video.id,
+        key: video.key,
+        name: video.name,
+        site: video.site,
+        type: video.type,
+        official: video.official,
+        youtubeUrl: `https://www.youtube.com/watch?v=${video.key}`,
+        thumbnailUrl: `https://img.youtube.com/vi/${video.key}/maxresdefault.jpg`,
+      })) || [],
+      
+      // Watch providers
+      watchProviders: extractWatchProviders(movieData['watch/providers']?.results || {}),
+    };
+
+    res.json({
+      success: true,
+      movieDetails,
+    });
+  } catch (error) {
+    console.error('Error fetching movie details:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch movie details',
+      message: error.message 
+    });
+  }
+});
+
+// Helper function to extract watch providers
+function extractWatchProviders(results) {
+  const providers = [];
+  const countryCodes = ['US', 'GB', 'CA', 'AU', 'IN'];
+  
+  for (const countryCode of countryCodes) {
+    if (results[countryCode]) {
+      const countryData = results[countryCode];
+      
+      // Streaming providers
+      if (countryData.flatrate) {
+        countryData.flatrate.forEach(provider => {
+          providers.push({
+            id: provider.provider_id,
+            name: provider.provider_name,
+            logoPath: provider.logo_path,
+            type: 'Streaming',
+            country: countryCode,
+          });
+        });
+      }
+      
+      // Rental providers
+      if (countryData.rent) {
+        countryData.rent.forEach(provider => {
+          providers.push({
+            id: provider.provider_id,
+            name: provider.provider_name,
+            logoPath: provider.logo_path,
+            type: 'Rent',
+            country: countryCode,
+          });
+        });
+      }
+      
+      // Purchase providers
+      if (countryData.buy) {
+        countryData.buy.forEach(provider => {
+          providers.push({
+            id: provider.provider_id,
+            name: provider.provider_name,
+            logoPath: provider.logo_path,
+            type: 'Buy',
+            country: countryCode,
+          });
+        });
+      }
+      
+      break; // Use first available country
+    }
+  }
+  
+  return providers;
+}
 
 // Record swipe endpoint
 app.post('/api/swipes', async (req, res) => {
